@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>下棋模拟器 - 网页联机版</title>
+<script src="https://unpkg.com/peerjs@1.5.0/dist/peerjs.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #1e1e1e; color: #fff;
+    font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+    min-height: 100vh;
+    user-select: none;
+    overflow-x: hidden;
+  }
+  .screen { display: flex; flex-direction: column; align-items: center; padding: 15px; }
+  .hidden { display: none !important; }
+
+  h1 { color: #00e5ff; font-size: 26px; margin: 15px 0; text-align: center; }
+  .btn {
+    font-family: inherit; font-size: 15px; font-weight: bold;
+    padding: 10px 22px; border: none; border-radius: 6px;
+    cursor: pointer; margin: 6px; transition: 0.15s;
+  }
+  .btn-blue { background: #00e5ff; color: #1e1e1e; }
+  .btn-blue:hover { background: #fff; }
+  .btn-yellow { background: #FFD700; color: #1e1e1e; }
+  .btn-yellow:hover { background: #ffea75; }
+  .btn-gray { background: #444; color: #fff; }
+  .btn-red { background: #ff5c5c; color: #fff; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  #topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    width: 100%; max-width: 900px; padding: 5px 10px; margin-bottom: 5px;
+    flex-wrap: wrap; gap: 6px;
+  }
+  #connInfo { color: #00e5ff; font-size: 13px; }
+  #scoreBoard { color: #FFD700; font-size: 15px; font-weight: bold; }
+
+  #canvasWrap { position: relative; width: 100%; max-width: 900px; }
+  #board {
+    width: 100%; height: auto; background: #2d2d2e; display: block;
+    border-radius: 4px; touch-action: manipulation;
+  }
+  #chatLayer {
+    position: absolute; left: 0; bottom: 0; width: 100%;
+    pointer-events: none;
+  }
+  #chatMessages {
+    background: rgba(0,0,0,0.62);
+    padding: 4px 8px;
+    font-family: Consolas, monospace; font-size: 13px;
+    max-height: 140px; overflow: hidden; pointer-events: auto;
+  }
+  .chatLine { line-height: 22px; }
+  .chatTag-self { color: #55FF55; }
+  .chatTag-opp { color: #FFAA00; }
+  .chatText { color: #fff; }
+  #chatInputWrap {
+    display: none; background: rgba(0,0,0,0.75); padding: 6px 10px;
+  }
+  #chatInputWrap.active { display: block; }
+  #chatInput {
+    width: 100%; background: transparent; border: none; color: #fff;
+    font-family: Consolas, monospace; font-size: 14px; outline: none;
+    padding: 4px 0;
+  }
+  #chatInput::placeholder { color: #888; }
+
+  #cardBar {
+    display: flex; flex-wrap: wrap; justify-content: center;
+    width: 100%; max-width: 900px; padding: 8px; margin-top: 6px;
+    background: #2d2d2e; border-radius: 6px; min-height: 50px;
+    align-items: center; gap: 6px;
+  }
+  .card {
+    background: #2d2d2e; border: 2px solid #00e5ff; color: #00e5ff;
+    padding: 6px 12px; border-radius: 5px; font-size: 13px;
+    font-weight: bold; cursor: pointer;
+  }
+  .card:hover { background: #333; }
+  .card.taken { opacity: 0.35; pointer-events: none; }
+
+  #status {
+    width: 100%; max-width: 900px; text-align: center;
+    color: #00e5ff; padding: 8px; font-size: 13px; min-height: 30px;
+  }
+
+  /* 弹窗 */
+  .modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 999;
+  }
+  .modal.hidden { display: none; }
+  .modal-body {
+    background: #2d2d2e; padding: 20px; border-radius: 10px;
+    max-width: 90%; max-height: 90%; overflow-y: auto; min-width: 320px;
+  }
+  .shop-item {
+    background: #252528; border-radius: 8px; padding: 12px;
+    margin: 8px 0; color: #fff;
+  }
+  .shop-item h3 { font-size: 16px; margin-bottom: 6px; }
+  .shop-item p { font-size: 12px; color: #aaa; margin-bottom: 6px; line-height: 1.5; }
+  .shop-item .price { color: #FF6B6B; font-weight: bold; font-size: 14px; margin-bottom: 8px; }
+  .shop-item .btn { font-size: 13px; padding: 6px 15px; }
+
+  #toast {
+    position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.9); color: #fff; padding: 10px 20px;
+    border-radius: 6px; font-size: 14px; z-index: 1000;
+    opacity: 0; transition: 0.3s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+
+  @media (max-width: 600px) {
+    h1 { font-size: 20px; }
+    .btn { font-size: 13px; padding: 8px 16px; }
+    #chatMessages { font-size: 11px; max-height: 100px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== 主菜单 ========== -->
+<div id="menuScreen" class="screen">
+  <h1>♟️ 下棋模拟器 ♟️</h1>
+  <div style="color:#888; margin-bottom:20px; text-align:center;">
+    象棋 + 围棋 + 五子棋 · 积分对战 · 网络联机<br>
+    <span style="font-size:12px;">（联机通过 PeerJS 中转，可以跨网络）</span>
+  </div>
+  <button class="btn btn-blue" onclick="createRoom()">🏠 创建房间（当房主）</button>
+  <button class="btn btn-yellow" onclick="showJoinDialog()">🔗 加入房间（当客户端）</button>
+
+  <div style="margin-top:30px; color:#777; font-size:12px; text-align:center; line-height:1.8;">
+    吃子+2分｜将军/将死+10分｜五子连珠-10分并结算｜高分者胜<br>
+    游戏中按 T 聊天｜鼠标滚轮翻阅历史<br>
+    规则：象棋 + 围棋（可混下）+ 技能系统
+  </div>
+</div>
+
+<!-- ========== 游戏界面 ========== -->
+<div id="gameScreen" class="screen hidden">
+  <div id="topbar">
+    <button class="btn btn-gray" onclick="leaveGame()" style="font-size:12px;padding:6px 12px;">返回主菜单</button>
+    <span id="connInfo">⚡ 未连接</span>
+    <span id="scoreBoard">🔴 红方 0 : 0 黑方 ⚫</span>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="board" width="900" height="680"></canvas>
+    <div id="chatLayer">
+      <div id="chatMessages"></div>
+      <div id="chatInputWrap">
+        <input id="chatInput" type="text" maxlength="200" placeholder="输入消息后按回车发送，Esc 取消">
+      </div>
+    </div>
+  </div>
+
+  <div id="cardBar"></div>
+  <div id="status">连接中...</div>
+
+  <div style="margin-top:6px;">
+    <button class="btn btn-yellow" onclick="openShop()" style="font-size:13px;">🛒 商城</button>
+  </div>
+</div>
+
+<!-- ========== 商城弹窗 ========== -->
+<div id="shopModal" class="modal hidden">
+  <div class="modal-body">
+    <h2 style="color:#FFD700; margin-bottom:12px;">🛒 技能商城</h2>
+    <div id="shopList"></div>
+    <div style="text-align:center; margin-top:12px;">
+      <button class="btn btn-gray" onclick="closeShop()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 加入房间弹窗 ========== -->
+<div id="joinModal" class="modal hidden">
+  <div class="modal-body">
+    <h2 style="margin-bottom:12px;">加入房间</h2>
+    <input id="joinInput" type="text" placeholder="粘贴房主的房间号"
+           style="width:100%; padding:10px; font-size:14px; border-radius:5px; border:1px solid #555; background:#1e1e1e; color:#fff; margin-bottom:12px;">
+    <div style="text-align:center;">
+      <button class="btn btn-blue" onclick="doJoin()">加入</button>
+      <button class="btn btn-gray" onclick="closeJoinDialog()">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 房间号弹窗 ========== -->
+<div id="roomModal" class="modal hidden">
+  <div class="modal-body" style="text-align:center;">
+    <h2 style="color:#00e5ff; margin-bottom:12px;">🎉 房间已创建</h2>
+    <p style="color:#aaa; font-size:13px; margin-bottom:14px;">
+      把房间号发给朋友，让他点「加入房间」
+    </p>
+    <div id="roomIdBox" onclick="copyRoomId()" style="
+      background:#1e1e1e; border:2px solid #00e5ff; border-radius:8px;
+      padding:15px; font-family:Consolas,monospace; font-size:22px;
+      color:#00e5ff; font-weight:bold; cursor:pointer;
+      user-select:none; margin-bottom:14px; transition:0.15s;
+    ">
+      <span id="roomIdText"></span>
+      <div style="font-size:12px; color:#888; margin-top:8px;">📋 点击复制</div>
+    </div>
+    <button class="btn btn-blue" onclick="closeRoomModal()">进入游戏</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ============================================================
+// 常量
+// ============================================================
+const CHE=1, MA=2, XIANG=3, SHI=4, JIANG=5, PAO=6, BING=7;
+const NAMES = {
+  red:   {1:"车",2:"马",3:"相",4:"仕",5:"帅",6:"炮",7:"兵"},
+  black: {1:"车",2:"马",3:"象",4:"士",5:"将",6:"炮",7:"卒"},
+};
+const CELL = 55;
+const BOARD_W = 900, BOARD_H = 680;
+const START_X = 270;
+const START_Y = 80;
+const GO_BLACK = "go_black";
+const GO_WHITE = "go_white";
+
+const SKILL_DEFS = {
+  "复制":     { price:3,  color:"#00e5ff", desc:"复制任意棋子成自己的一方，放到空位。" },
+  "无懈可击": { price:8,  color:"#FFD700", desc:"给一枚己方象棋棋子套上护盾，免疫被吃。" },
+  "超级围棋": { price:15, color:"#FF6B6B", desc:"使用后 3 秒内，你落下的围棋棋子会直接吃掉上下左右相邻的所有象棋棋子（每个+2分）。" },
+};
+
+// ============================================================
+// 游戏状态
+// ============================================================
+let canvas, ctx;
+let state = {
+  board: [],
+  currentTurn: "red",
+  gameOver: false,
+  selected: null,
+  myColor: "red",
+  oppColor: "black",
+  flipped: false,
+  scores: { red:0, black:0 },
+  shields: new Set(),
+  myCards: [],
+  pendingCardIdx: -1,
+  pendingSkill: null,
+  skillMode: null,
+  shopPayList: [],
+  shopPendingSkill: null,
+  skillSource: null,
+  superGoUntil: 0,
+  active: true,
+  chatMessages: [],
+  chatScrollOffset: 0,
+  CHAT_MAX_LINES: 5,
+};
+
+// ============================================================
+// 网络 (PeerJS)
+// ============================================================
+let peer = null;
+let conn = null;
+let isHost = false;
+
+function createRoom() {
+  const roomId = "chess-" + Math.floor(100000 + Math.random() * 900000);
+  peer = new Peer(roomId, { debug: 1 });
+
+  peer.on("open", (id) => {
+    document.getElementById("roomIdText").textContent = id;
+    document.getElementById("roomModal").classList.remove("hidden");
+    startGame("red", true);
+  });
+  peer.on("error", (err) => {
+    console.error(err);
+    toast("房间创建失败: " + err.type);
+  });
+  peer.on("connection", (c) => {
+    conn = c;
+    setupConnHandlers();
+  });
+}
+
+function copyRoomId() {
+  const id = document.getElementById("roomIdText").textContent;
+  if (!id) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(id).then(() => {
+      toast("✅ 已复制房间号：" + id);
+    }).catch(() => fallbackCopy(id));
+  } else {
+    fallbackCopy(id);
+  }
+}
+
+function fallbackCopy(id) {
+  const ta = document.createElement("textarea");
+  ta.value = id;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+    toast("✅ 已复制房间号：" + id);
+  } catch (e) {
+    toast("复制失败，请手动长按选择");
+  }
+  document.body.removeChild(ta);
+}
+
+function closeRoomModal() {
+  document.getElementById("roomModal").classList.add("hidden");
+}
+
+function showJoinDialog() {
+  document.getElementById("joinModal").classList.remove("hidden");
+  document.getElementById("joinInput").focus();
+}
+function closeJoinDialog() {
+  document.getElementById("joinModal").classList.add("hidden");
+}
+function doJoin() {
+  const hostId = document.getElementById("joinInput").value.trim();
+  if (!hostId) return;
+  closeJoinDialog();
+
+  peer = new Peer({ debug: 1 });
+  peer.on("open", () => {
+    conn = peer.connect(hostId);
+    setupConnHandlers();
+    startGame("black", false);
+  });
+  peer.on("error", (err) => {
+    console.error(err);
+    toast("连接失败: " + err.type);
+  });
+}
+
+function setupConnHandlers() {
+  conn.on("open", () => {
+    document.getElementById("connInfo").textContent = "⚡ 已连接";
+    toast("连接成功！");
+    if (isHost) {
+      setTimeout(() => broadcastFullState(), 500);
+    }
+  });
+  conn.on("data", (data) => {
+    handleNetworkMessage(data);
+  });
+  conn.on("close", () => {
+    document.getElementById("connInfo").textContent = "❌ 对方已断开";
+    toast("对方已断开");
+    state.gameOver = true;
+  });
+  conn.on("error", (e) => console.error("conn error", e));
+}
+
+function send(obj) {
+  if (conn && conn.open) conn.send(obj);
+}
+
+function handleNetworkMessage(msg) {
+  switch (msg.type) {
+    case "full_state":
+      applyFullState(msg);
+      break;
+    case "move":
+      applyRemoteMove(msg);
+      break;
+    case "go_move":
+      applyRemoteGoMove(msg);
+      break;
+    case "score":
+      state.scores = msg.scores;
+      updateScoreDisplay();
+      break;
+    case "chat":
+      appendChat("对方", msg.text);
+      break;
+  }
+}
+
+// ============================================================
+// 游戏启动
+// ============================================================
+function startGame(myColor, host) {
+  isHost = host;
+  state.myColor = myColor;
+  state.oppColor = myColor === "red" ? "black" : "red";
+  state.flipped = myColor === "black";
+  state.currentTurn = "red";
+  state.gameOver = false;
+  state.selected = null;
+  state.scores = { red:0, black:0 };
+  state.shields = new Set();
+  state.myCards = [];
+  state.skillMode = null;
+  state.superGoUntil = 0;
+  state.chatMessages = [];
+  setupChessBoard();
+
+  document.getElementById("menuScreen").classList.add("hidden");
+  document.getElementById("gameScreen").classList.remove("hidden");
+
+  canvas = document.getElementById("board");
+  ctx = canvas.getContext("2d");
+  canvas.addEventListener("click", onBoardClick);
+  canvas.addEventListener("touchstart", onBoardTouch, { passive: false });
+
+  render();
+  updateScoreDisplay();
+  updateStatus();
+  updateCardBar();
+  setupChatInput();
+  requestAnimationFrame(gameLoop);
+
+  setInterval(() => {
+    if (state.superGoUntil > 0 && Date.now() > state.superGoUntil) {
+      state.superGoUntil = 0;
+      updateStatus();
+    }
+  }, 200);
+}
+
+function leaveGame() {
+  state.active = false;
+  if (conn) try { conn.close(); } catch(e){}
+  if (peer) try { peer.destroy(); } catch(e){}
+  document.getElementById("gameScreen").classList.add("hidden");
+  document.getElementById("menuScreen").classList.remove("hidden");
+  location.reload();
+}
+
+function setupChessBoard() {
+  state.board = Array.from({length:10}, () => Array(9).fill(null));
+  const order = [CHE, MA, XIANG, SHI, JIANG, SHI, XIANG, MA, CHE];
+  order.forEach((t,c) => {
+    state.board[0][c] = {color:"black", type:t};
+    state.board[9][c] = {color:"red", type:t};
+  });
+  state.board[2][1] = {color:"black", type:PAO};
+  state.board[2][7] = {color:"black", type:PAO};
+  state.board[7][1] = {color:"red", type:PAO};
+  state.board[7][7] = {color:"red", type:PAO};
+  [0,2,4,6,8].forEach(c => {
+    state.board[3][c] = {color:"black", type:BING};
+    state.board[6][c] = {color:"red", type:BING};
+  });
+}
+
+// ============================================================
+// 坐标转换
+// ============================================================
+function toScreen(r, c) {
+  if (state.flipped) return [9-r, 8-c];
+  return [r, c];
+}
+function toBoard(dr, dc) {
+  if (state.flipped) return [9-dr, 8-dc];
+  return [dr, dc];
+}
+
+// ============================================================
+// 绘制
+// ============================================================
+function render() {
+  if (!ctx) return;
+  ctx.clearRect(0, 0, BOARD_W, BOARD_H);
+  ctx.fillStyle = "#2d2d2e";
+  ctx.fillRect(0, 0, BOARD_W, BOARD_H);
+  drawBoard();
+  drawPieces();
+  drawIndicator();
+  drawSelected();
+  drawShopPayHighlights();
+  drawSkillSource();
+}
+
+function drawBoard() {
+  const sx = START_X, sy = START_Y;
+  const w = 8 * CELL, h = 9 * CELL;
+
+  ctx.strokeStyle = "#e0e0e0";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(sx, sy, w, h);
+
+  ctx.lineWidth = 2;
+  for (let i = 0; i <= 9; i++) {
+    ctx.beginPath();
+    ctx.moveTo(sx, sy + i*CELL);
+    ctx.lineTo(sx + w, sy + i*CELL);
+    ctx.stroke();
+  }
+  for (let j = 0; j <= 8; j++) {
+    const x = sx + j*CELL;
+    if (j === 0 || j === 8) {
+      ctx.beginPath();
+      ctx.moveTo(x, sy); ctx.lineTo(x, sy + h);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(x, sy); ctx.lineTo(x, sy + 4*CELL);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x, sy + 5*CELL); ctx.lineTo(x, sy + h);
+      ctx.stroke();
+    }
+  }
+  ctx.beginPath();
+  ctx.moveTo(sx + 3*CELL, sy); ctx.lineTo(sx + 5*CELL, sy + 2*CELL); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(sx + 5*CELL, sy); ctx.lineTo(sx + 3*CELL, sy + 2*CELL); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(sx + 3*CELL, sy + 7*CELL); ctx.lineTo(sx + 5*CELL, sy + 9*CELL); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(sx + 5*CELL, sy + 7*CELL); ctx.lineTo(sx + 3*CELL, sy + 9*CELL); ctx.stroke();
+
+  if (state.flipped) {
+    ctx.save();
+    ctx.fillStyle = "#e0e0e0";
+    ctx.font = "bold 24px KaiTi, serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.translate(sx + 2*CELL, sy + 4.5*CELL);
+    ctx.rotate(Math.PI);
+    ctx.fillText("楚 河", 0, 0);
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = "#e0e0e0";
+    ctx.font = "bold 24px KaiTi, serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.translate(sx + 6*CELL, sy + 4.5*CELL);
+    ctx.rotate(Math.PI);
+    ctx.fillText("汉 界", 0, 0);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = "#e0e0e0";
+    ctx.font = "bold 24px KaiTi, serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("楚 河", sx + 2*CELL, sy + 4.5*CELL);
+    ctx.fillText("汉 界", sx + 6*CELL, sy + 4.5*CELL);
+  }
+}
+
+function drawPieces() {
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 9; c++) {
+      const p = state.board[r][c];
+      if (!p) continue;
+      const [dr, dc] = toScreen(r, c);
+      const x = START_X + dc*CELL;
+      const y = START_Y + dr*CELL;
+
+      if (p === GO_BLACK || p === GO_WHITE) {
+        ctx.beginPath();
+        ctx.arc(x, y, 18, 0, Math.PI*2);
+        ctx.fillStyle = p === GO_BLACK ? "#000" : "#FFF";
+        ctx.fill();
+        ctx.strokeStyle = p === GO_BLACK ? "#444" : "#888";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(x, y, 23, 0, Math.PI*2);
+        ctx.fillStyle = p.color === "red" ? "#FFF0F0" : "#F0F0F0";
+        ctx.fill();
+        ctx.strokeStyle = p.color === "red" ? "#CC0000" : "#111";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.fillStyle = p.color === "red" ? "#CC0000" : "#111";
+        ctx.font = "bold 24px KaiTi, serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(NAMES[p.color][p.type], x, y);
+      }
+
+      if (state.shields.has(r + "," + c)) {
+        ctx.beginPath();
+        ctx.arc(x, y, 28, 0, Math.PI*2);
+        ctx.strokeStyle = "#FFD700";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+function drawSelected() {
+  if (!state.selected) return;
+  const [dr, dc] = toScreen(state.selected.r, state.selected.c);
+  const x = START_X + dc*CELL;
+  const y = START_Y + dr*CELL;
+  ctx.beginPath();
+  ctx.arc(x, y, 28, 0, Math.PI*2);
+  ctx.strokeStyle = "#FFD700";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+}
+
+function drawIndicator() {
+  drawIndicatorCircle(120, 100, state.oppColor === "red" ? "#000" : "#fff",
+                       state.oppColor === "red" ? "#fff" : "#000", "对方");
+  drawIndicatorCircle(780, 580, state.myColor === "red" ? "#000" : "#fff",
+                       state.myColor === "red" ? "#fff" : "#000", "自己");
+}
+
+function drawIndicatorCircle(cx, cy, innerColor, innerOutline, label) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, 40, 0, Math.PI*2);
+  ctx.fillStyle = "#8B4513";
+  ctx.fill();
+  ctx.strokeStyle = "#5C2E0B";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, 25, 0, Math.PI*2);
+  ctx.fillStyle = innerColor;
+  ctx.fill();
+  ctx.strokeStyle = innerOutline;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = "#dddddd";
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(label, cx, cy + 58);
+}
+
+function drawShopPayHighlights() {
+  for (const item of state.shopPayList) {
+    const [dr, dc] = toScreen(item[0], item[1]);
+    const x = START_X + dc*CELL;
+    const y = START_Y + dr*CELL;
+    ctx.strokeStyle = "#FF3366";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x-26, y-26, 52, 52);
+  }
+}
+
+function drawSkillSource() {
+  if (!state.skillSource) return;
+  const [r, c] = state.skillSource;
+  const [dr, dc] = toScreen(r, c);
+  const x = START_X + dc*CELL;
+  const y = START_Y + dr*CELL;
+  ctx.beginPath();
+  ctx.arc(x, y, 28, 0, Math.PI*2);
+  ctx.strokeStyle = "#00FF88";
+  ctx.lineWidth = 4;
+  ctx.stroke();
+}
+
+function gameLoop() {
+  if (!state.active) return;
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+// ============================================================
+// 规则
+// ============================================================
+function inBoard(r, c) { return r>=0 && r<=9 && c>=0 && c<=8; }
+
+function inPalace(color, r, c) {
+  if (c<3 || c>5) return false;
+  return color === "red" ? (r>=7 && r<=9) : (r>=0 && r<=2);
+}
+
+function countBetween(fr, fc, tr, tc) {
+  let cnt = 0;
+  const dr = tr === fr ? 0 : (tr > fr ? 1 : -1);
+  const dc = tc === fc ? 0 : (tc > fc ? 1 : -1);
+  let r = fr + dr, c = fc + dc;
+  while (r !== tr || c !== tc) {
+    if (state.board[r][c]) cnt++;
+    r += dr; c += dc;
+  }
+  return cnt;
+}
+function pathClear(fr, fc, tr, tc) { return countBetween(fr, fc, tr, tc) === 0; }
+
+function getPieceCamp(p) {
+  if (!p) return null;
+  if (p === GO_BLACK) return "red";
+  if (p === GO_WHITE) return "black";
+  if (typeof p === "object" && p.color) return p.color;
+  return null;
+}
+
+function isChessPiece(p) {
+  return p && typeof p === "object" && p.color && p.type;
+}
+function isGoPiece(p) {
+  return p === GO_BLACK || p === GO_WHITE;
+}
+
+function isValidMove(fr, fc, tr, tc) {
+  if (!inBoard(tr, tc)) return false;
+  const p = state.board[fr][fc];
+  if (!isChessPiece(p)) return false;
+  const target = state.board[tr][tc];
+  if (isGoPiece(target)) return false;
+  if (target && isChessPiece(target) && target.color === p.color) return false;
+  if (target && state.shields.has(tr + "," + tc)) return false;
+
+  const dr = tr - fr, dc = tc - fc;
+  const adr = Math.abs(dr), adc = Math.abs(dc);
+
+  switch (p.type) {
+    case CHE:
+      if (dr !== 0 && dc !== 0) return false;
+      return pathClear(fr, fc, tr, tc);
+    case MA: {
+      if (!((adr === 2 && adc === 1) || (adr === 1 && adc === 2))) return false;
+      const lr = adr === 2 ? fr + dr/2 : fr;
+      const lc = adc === 2 ? fc + dc/2 : fc;
+      return state.board[lr][lc] === null;
+    }
+    case XIANG:
+      if (adr !== 2 || adc !== 2) return false;
+      if (p.color === "red" && tr < 5) return false;
+      if (p.color === "black" && tr > 4) return false;
+      return state.board[(fr+tr)/2][(fc+tc)/2] === null;
+    case SHI:
+      if (adr !== 1 || adc !== 1) return false;
+      return inPalace(p.color, tr, tc);
+    case JIANG:
+      if (adr + adc === 1 && inPalace(p.color, tr, tc)) return true;
+      if (dc === 0 && isChessPiece(target) && target.type === JIANG && target.color !== p.color) {
+        if (state.shields.has(tr + "," + tc)) return false;
+        return pathClear(fr, fc, tr, tc);
+      }
+      return false;
+    case PAO: {
+      if (dr !== 0 && dc !== 0) return false;
+      const cnt = countBetween(fr, fc, tr, tc);
+      if (!target) return cnt === 0;
+      return cnt === 1;
+    }
+    case BING:
+      if (p.color === "red") {
+        if (dr === -1 && dc === 0) return true;
+        if (fr <= 4 && dr === 0 && adc === 1) return true;
+      } else {
+        if (dr === 1 && dc === 0) return true;
+        if (fr >= 5 && dr === 0 && adc === 1) return true;
+      }
+      return false;
+  }
+  return false;
+}
+
+function findKing(color) {
+  for (let r=0;r<10;r++) for (let c=0;c<9;c++) {
+    const p = state.board[r][c];
+    if (isChessPiece(p) && p.color === color && p.type === JIANG) return [r,c];
+  }
+  return null;
+}
+
+function isInCheck(color) {
+  const kp = findKing(color);
+  if (!kp) return true;
+  const opp = color === "red" ? "black" : "red";
+  for (let r=0;r<10;r++) for (let c=0;c<9;c++) {
+    const p = state.board[r][c];
+    if (isChessPiece(p) && p.color === opp) {
+      if (isValidMove(r, c, kp[0], kp[1])) return true;
+    }
+  }
+  return false;
+}
+
+function getLegalMoves(color) {
+  const moves = [];
+  for (let fr=0;fr<10;fr++) for (let fc=0;fc<9;fc++) {
+    const p = state.board[fr][fc];
+    if (!isChessPiece(p) || p.color !== color) continue;
+    for (let tr=0;tr<10;tr++) for (let tc=0;tc<9;tc++) {
+      if (!isValidMove(fr, fc, tr, tc)) continue;
+      const cap = state.board[tr][tc];
+      state.board[tr][tc] = p; state.board[fr][fc] = null;
+      const safe = !isInCheck(color);
+      state.board[fr][fc] = p; state.board[tr][tc] = cap;
+      if (safe) moves.push([fr, fc, tr, tc]);
+    }
+  }
+  return moves;
+}
+
+function checkFiveInLine(row, col, color) {
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  for (const [dr, dc] of dirs) {
+    let count = 1;
+    let r = row + dr, c = col + dc;
+    while (inBoard(r, c) && getPieceCamp(state.board[r][c]) === color) {
+      count++; r += dr; c += dc;
+    }
+    r = row - dr; c = col - dc;
+    while (inBoard(r, c) && getPieceCamp(state.board[r][c]) === color) {
+      count++; r -= dr; c -= dc;
+    }
+    if (count >= 5) return true;
+  }
+  return false;
+}
+
+// ============================================================
+// 围死
+// ============================================================
+function checkSurroundCapture() {
+  const toRemove = [];
+  for (let r=0;r<10;r++) for (let c=0;c<9;c++) {
+    const p = state.board[r][c];
+    if (!p) continue;
+    const camp = getPieceCamp(p);
+    const oppCamp = camp === "red" ? "black" : "red";
+    let surrounded = true;
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = r + dr, nc = c + dc;
+      if (inBoard(nr, nc)) {
+        const nb = state.board[nr][nc];
+        if (!nb || getPieceCamp(nb) !== oppCamp) { surrounded = false; break; }
+      }
+    }
+    if (surrounded) toRemove.push([r, c, camp]);
+  }
+  for (const [r, c, camp] of toRemove) {
+    state.board[r][c] = null;
+    state.shields.delete(r + "," + c);
+    const capturer = camp === "red" ? "black" : "red";
+    state.scores[capturer] += 2;
+  }
+  if (toRemove.length > 0) updateScoreDisplay();
+  return toRemove.length;
+}
+
+// ============================================================
+// 点击处理
+// ============================================================
+function onBoardTouch(e) {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  handleClick(t.clientX, t.clientY);
+}
+function onBoardClick(e) {
+  handleClick(e.clientX, e.clientY);
+}
+
+function handleClick(clientX, clientY) {
+  if (state.gameOver) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = BOARD_W / rect.width;
+  const scaleY = BOARD_H / rect.height;
+  const x = (clientX - rect.left) * scaleX;
+  const y = (clientY - rect.top) * scaleY;
+
+  if (chatState.open) {
+    closeChatInput();
+  }
+
+  const dr = Math.round((y - START_Y) / CELL);
+  const dc = Math.round((x - START_X) / CELL);
+  if (dr < 0 || dr > 9 || dc < 0 || dc > 8) return;
+  const snapX = START_X + dc * CELL;
+  const snapY = START_Y + dr * CELL;
+  if (Math.abs(x - snapX) > CELL*0.55 || Math.abs(y - snapY) > CELL*0.55) return;
+
+  const [r, c] = toBoard(dr, dc);
+  if (!inBoard(r, c)) return;
+  const p = state.board[r][c];
+
+  if (state.skillMode === "shop_pay") {
+    handleShopPayClick(r, c, p); return;
+  }
+  if (state.skillMode === "pick_source" || state.skillMode === "place" || state.skillMode === "pick_shield") {
+    handleSkillClick(r, c, p); return;
+  }
+
+  if (state.currentTurn !== state.myColor) {
+    updateStatus("⏳ 不是你的回合，等待对方...");
+    return;
+  }
+
+  if (state.selected) {
+    const [fr, fc] = [state.selected.r, state.selected.c];
+    if (isChessPiece(p) && p.color === state.myColor) {
+      state.selected = {r, c};
+      updateStatus("已选中 " + NAMES[p.color][p.type]);
+      return;
+    }
+    if (!isValidMove(fr, fc, r, c)) {
+      if (p && state.shields.has(r + "," + c)) {
+        updateStatus("🛡 对方棋子有护盾，无法吃！");
+      } else {
+        updateStatus("走法不合法。");
+      }
+      state.selected = null;
+      return;
+    }
+    const moving = state.board[fr][fc];
+    const cap = state.board[r][c];
+    state.board[r][c] = moving;
+    state.board[fr][fc] = null;
+    if (isInCheck(state.myColor)) {
+      state.board[fr][fc] = moving;
+      state.board[r][c] = cap;
+      updateStatus("不能送将！");
+      state.selected = null;
+      return;
+    }
+
+    if (state.shields.has(fr + "," + fc)) {
+      state.shields.delete(fr + "," + fc);
+      state.shields.add(r + "," + c);
+    }
+    if (isChessPiece(cap)) state.scores[state.myColor] += 2;
+    state.selected = null;
+
+    const capturedSurround = checkSurroundCapture();
+    updateScoreDisplay();
+    send({ type:"move", fr, fc, tr:r, tc:c });
+    send({ type:"score", scores: state.scores });
+
+    if (capturedSurround > 0) {
+      updateStatus("⚫ 你走子，围死 " + capturedSurround + " 枚棋子！+" + (capturedSurround*2) + "分");
+    }
+
+    if (checkFiveInLine(r, c, state.myColor)) {
+      state.scores[state.myColor] -= 10;
+      updateScoreDisplay();
+      send({ type:"score", scores: state.scores });
+      settleGame((state.myColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
+      return;
+    }
+
+    const opp = state.oppColor;
+    const oppMoves = getLegalMoves(opp);
+    if (oppMoves.length === 0) {
+      state.scores[state.myColor] += 10;
+      updateScoreDisplay();
+      send({ type:"score", scores: state.scores });
+      settleGame((state.myColor === "red" ? "红方" : "黑方") + "将死对手 +10分");
+      return;
+    }
+    if (isInCheck(opp)) {
+      state.scores[state.myColor] += 10;
+      updateScoreDisplay();
+      send({ type:"score", scores: state.scores });
+      settleGame((state.myColor === "red" ? "红方" : "黑方") + "将军 +10分");
+      return;
+    }
+
+    state.currentTurn = opp;
+    updateStatus();
+    return;
+  }
+
+  if (!p) {
+    placeGoPiece(r, c);
+    return;
+  }
+  if (isChessPiece(p) && p.color === state.myColor) {
+    state.selected = {r, c};
+    updateStatus("已选中 " + NAMES[p.color][p.type] + "，请点目标位置");
+    return;
+  }
+  if (isGoPiece(p)) {
+    updateStatus("围棋棋子不能移动。点空白可下围棋，点自己棋子可走象棋。");
+    return;
+  }
+  updateStatus("请点击自己的象棋棋子（走子），或点击空白处（下围棋）。");
+}
+
+// ============================================================
+// 围棋落子
+// ============================================================
+function placeGoPiece(r, c) {
+  const myGo = state.myColor === "red" ? GO_BLACK : GO_WHITE;
+  state.board[r][c] = myGo;
+
+  let extraEaten = 0;
+  if (Date.now() < state.superGoUntil) {
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = r + dr, nc = c + dc;
+      if (inBoard(nr, nc)) {
+        const p2 = state.board[nr][nc];
+        if (isChessPiece(p2)) {
+          state.board[nr][nc] = null;
+          state.shields.delete(nr + "," + nc);
+          extraEaten++;
+        }
+      }
+    }
+    if (extraEaten > 0) state.scores[state.myColor] += extraEaten * 2;
+  }
+
+  const captured = checkSurroundCapture();
+  send({ type:"go_move", r, c, go_color: myGo });
+  send({ type:"score", scores: state.scores });
+
+  if (checkFiveInLine(r, c, state.myColor)) {
+    state.scores[state.myColor] -= 10;
+    updateScoreDisplay();
+    send({ type:"score", scores: state.scores });
+    settleGame((state.myColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
+    return;
+  }
+
+  const goName = myGo === GO_BLACK ? "黑子" : "白子";
+  let msg = "⚫ 你落" + goName;
+  if (extraEaten > 0) msg += "，超级围棋吞掉 " + extraEaten + " 枚象棋棋子！+" + (extraEaten*2) + "分";
+  if (captured > 0) msg += "，围死 " + captured + " 枚棋子！+" + (captured*2) + "分";
+  if (extraEaten === 0 && captured === 0) msg += "成功。";
+  updateStatus(msg);
+
+  state.currentTurn = state.oppColor;
+  updateStatus();
+}
+
+// ============================================================
+// 网络消息处理
+// ============================================================
+function applyRemoteMove(msg) {
+  const { fr, fc, tr, tc } = msg;
+  const moving = state.board[fr][fc];
+  if (!moving) return;
+  const moverColor = moving.color;
+
+  const cap = state.board[tr][tc];
+  state.board[tr][tc] = moving;
+  state.board[fr][fc] = null;
+
+  if (state.shields.has(fr + "," + fc)) {
+    state.shields.delete(fr + "," + fc);
+    state.shields.add(tr + "," + tc);
+  }
+  if (isChessPiece(cap)) state.scores[moverColor] += 2;
+  checkSurroundCapture();
+  updateScoreDisplay();
+
+  if (checkFiveInLine(tr, tc, moverColor)) {
+    state.scores[moverColor] -= 10;
+    updateScoreDisplay();
+    settleGame((moverColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
+    return;
+  }
+
+  state.currentTurn = state.currentTurn === "red" ? "black" : "red";
+  const opp = state.currentTurn;
+
+  const oppMoves = getLegalMoves(opp);
+  if (oppMoves.length === 0) {
+    state.scores[moverColor] += 10;
+    updateScoreDisplay();
+    settleGame((moverColor === "red" ? "红方" : "黑方") + "将死对手 +10分");
+    return;
+  }
+  if (isInCheck(opp)) {
+    state.scores[moverColor] += 10;
+    updateScoreDisplay();
+    settleGame((moverColor === "red" ? "红方" : "黑方") + "将军 +10分");
+    return;
+  }
+  updateStatus();
+}
+
+function applyRemoteGoMove(msg) {
+  const { r, c, go_color } = msg;
+  if (!inBoard(r, c)) return;
+  if (state.board[r][c]) return;
+  state.board[r][c] = go_color;
+  checkSurroundCapture();
+  updateScoreDisplay();
+  const moverColor = go_color === GO_BLACK ? "red" : "black";
+  if (checkFiveInLine(r, c, moverColor)) {
+    state.scores[moverColor] -= 10;
+    updateScoreDisplay();
+    settleGame((moverColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
+    return;
+  }
+  state.currentTurn = state.currentTurn === "red" ? "black" : "red";
+  updateStatus();
+}
+
+function broadcastFullState() {
+  const board = state.board.map(row => row.map(cell => {
+    if (!cell) return null;
+    if (isGoPiece(cell)) return cell;
+    return { color: cell.color, type: cell.type };
+  }));
+  send({
+    type: "full_state",
+    board,
+    shields: [...state.shields],
+    turn: state.currentTurn,
+    scores: state.scores,
+  });
+}
+
+function applyFullState(msg) {
+  state.board = msg.board.map(row => row.map(cell => {
+    if (!cell) return null;
+    if (cell === GO_BLACK || cell === GO_WHITE) return cell;
+    return { color: cell.color, type: cell.type };
+  }));
+  state.shields = new Set(msg.shields);
+  state.currentTurn = msg.turn;
+  state.scores = msg.scores;
+  state.selected = null;
+  updateScoreDisplay();
+  updateStatus("🔄 已同步房主状态");
+}
+
+// ============================================================
+// 结算
+// ============================================================
+function settleGame(reason) {
+  state.gameOver = true;
+  const red = state.scores.red;
+  const black = state.scores.black;
+  let winner;
+  if (red > black) winner = "红方获胜";
+  else if (black > red) winner = "黑方获胜";
+  else winner = "平局";
+  updateStatus("🏁 " + reason + "｜红方 " + red + " : " + black + " 黑方｜" + winner);
+  setTimeout(() => {
+    alert("对局结算\n\n" + reason + "\n\n🔴 红方积分：" + red + "\n⚫ 黑方积分：" + black + "\n\n🏆 " + winner);
+  }, 100);
+}
+
+// ============================================================
+// UI 更新
+// ============================================================
+function updateStatus(msg) {
+  const el = document.getElementById("status");
+  if (msg) { el.textContent = msg; return; }
+  const turnName = state.currentTurn === "red" ? "红方" : "黑方";
+  const myName = state.myColor === "red" ? "红方" : "黑方";
+  let hint;
+  if (state.currentTurn === state.myColor) {
+    hint = "▶ 轮到你了！走象棋 / 下围棋 / 点卡片用技能";
+  } else {
+    hint = "⏳ 等待对方走子...";
+  }
+  let superTip = "";
+  if (Date.now() < state.superGoUntil) {
+    superTip = " ⚡超级围棋剩余 " + Math.ceil((state.superGoUntil - Date.now())/1000) + "s";
+  }
+  el.textContent = "你是【" + myName + "】｜当前回合：" + turnName + "  " + hint + superTip + "｜按 T 聊天";
+}
+
+function updateScoreDisplay() {
+  document.getElementById("scoreBoard").textContent =
+    "🔴 红方 " + state.scores.red + " : " + state.scores.black + " 黑方 ⚫";
+}
+
+function updateCardBar() {
+  const bar = document.getElementById("cardBar");
+  bar.innerHTML = "";
+  if (state.myCards.length === 0) {
+    const div = document.createElement("span");
+    div.style.color = "#777";
+    div.style.fontSize = "13px";
+    div.textContent = "（手牌空，去商城买技能吧）";
+    bar.appendChild(div);
+    return;
+  }
+  state.myCards.forEach((skill, idx) => {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.textContent = "🎴 " + skill;
+    card.style.color = SKILL_DEFS[skill].color;
+    card.style.borderColor = SKILL_DEFS[skill].color;
+    card.onclick = () => selectCard(idx);
+    bar.appendChild(card);
+  });
+}
+
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(el._tid);
+  el._tid = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+// ============================================================
+// 商城
+// ============================================================
+function openShop() {
+  if (state.gameOver) return;
+  const list = document.getElementById("shopList");
+  list.innerHTML = "";
+  for (const [name, info] of Object.entries(SKILL_DEFS)) {
+    const item = document.createElement("div");
+    item.className = "shop-item";
+    item.innerHTML = `
+      <h3 style="color:${info.color}">🎴 ${name}</h3>
+      <p>${info.desc}</p>
+      <div class="price">💰 价格: ${info.price} 枚棋子</div>
+      <button class="btn btn-blue" onclick="buySkill('${name}')">购买</button>
+    `;
+    list.appendChild(item);
+  }
+  document.getElementById("shopModal").classList.remove("hidden");
+}
+function closeShop() {
+  document.getElementById("shopModal").classList.add("hidden");
+}
+
+function buySkill(name) {
+  closeShop();
+  state.shopPendingSkill = name;
+  state.shopPayList = [];
+  state.skillMode = "shop_pay";
+  state.selected = null;
+  updateStatus("【购买 " + name + "】请点击 " + SKILL_DEFS[name].price + " 枚自己的象棋棋子支付");
+}
+
+function handleShopPayClick(r, c, p) {
+  const idx = state.shopPayList.findIndex(x => x[0] === r && x[1] === c);
+  if (idx !== -1) {
+    state.shopPayList.splice(idx, 1);
+  } else if (isChessPiece(p) && p.color === state.myColor && p.type !== JIANG) {
+    state.shopPayList.push([r, c]);
+  } else {
+    if (!p) updateStatus("请点击自己的象棋棋子作为支付");
+    else if (isChessPiece(p) && p.color === state.myColor && p.type === JIANG) updateStatus("❌ 不能献祭将/帅！");
+    else updateStatus("只能用自己的象棋棋子支付");
+    return;
+  }
+  const n = state.shopPayList.length;
+  const price = SKILL_DEFS[state.shopPendingSkill].price;
+  updateStatus("【购买 " + state.shopPendingSkill + "】支付棋子 " + n + "/" + price);
+
+  if (n === price) {
+    for (const [pr, pc] of state.shopPayList) {
+      state.board[pr][pc] = null;
+      state.shields.delete(pr + "," + pc);
+    }
+    state.myCards.push(state.shopPendingSkill);
+    const paidName = state.shopPendingSkill;
+    state.shopPayList = [];
+    state.shopPendingSkill = null;
+    state.skillMode = null;
+    updateCardBar();
+    updateStatus("✨ 成功购买【" + paidName + "】！卡片已加入手牌。");
+  }
+}
+
+// ============================================================
+// 技能
+// ============================================================
+function selectCard(idx) {
+  if (state.gameOver) return;
+  if (state.currentTurn !== state.myColor) {
+    updateStatus("❌ 不是你的回合！");
+    return;
+  }
+  if (idx < 0 || idx >= state.myCards.length) return;
+  const skill = state.myCards[idx];
+  state.pendingCardIdx = idx;
+  state.pendingSkill = skill;
+  state.selected = null;
+
+  if (skill === "复制") {
+    state.skillMode = "pick_source";
+    updateStatus("【复制】点击一枚象棋棋子作为复制对象");
+  } else if (skill === "无懈可击") {
+    state.skillMode = "pick_shield";
+    updateStatus("【无懈可击】点击一枚自己的象棋棋子");
+  } else if (skill === "超级围棋") {
+    state.myCards.splice(idx, 1);
+    state.pendingCardIdx = -1;
+    state.pendingSkill = null;
+    state.skillMode = null;
+    state.superGoUntil = Date.now() + 3000;
+    updateCardBar();
+    updateStatus("⚡ 超级围棋已激活！3 秒内点击空位下围棋！");
+  }
+}
+
+function consumePendingCard() {
+  if (state.pendingCardIdx >= 0 && state.pendingCardIdx < state.myCards.length) {
+    state.myCards.splice(state.pendingCardIdx, 1);
+  }
+  state.pendingCardIdx = -1;
+  state.pendingSkill = null;
+  updateCardBar();
+}
+
+function handleSkillClick(r, c, p) {
+  if (state.skillMode === "pick_source") {
+    if (!isChessPiece(p)) {
+      updateStatus("请点击一枚象棋棋子");
+      return;
+    }
+    state.skillSource = [r, c];
+    state.skillMode = "place";
+    updateStatus("【复制】选中 " + NAMES[p.color][p.type] + "，请点空位");
+  } else if (state.skillMode === "place") {
+    if (p) {
+      updateStatus("这里已有棋子");
+      return;
+    }
+    const [sr, sc] = state.skillSource;
+    const srcPiece = state.board[sr][sc];
+    if (!srcPiece) return;
+    const srcType = srcPiece.type;
+    state.board[r][c] = { color: state.myColor, type: srcType };
+    consumePendingCard();
+    state.skillMode = null;
+    state.skillSource = null;
+    updateStatus("✨ 发动【复制】！得到 " + NAMES[state.myColor][srcType] + "！");
+
+    if (checkFiveInLine(r, c, state.myColor)) {
+      state.scores[state.myColor] -= 10;
+      updateScoreDisplay();
+      send({ type:"score", scores: state.scores });
+      settleGame((state.myColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
+      return;
+    }
+    state.currentTurn = state.oppColor;
+    updateStatus();
+  } else if (state.skillMode === "pick_shield") {
+    if (!isChessPiece(p) || p.color !== state.myColor) {
+      updateStatus("只能给自己的象棋棋子套护盾");
+      return;
+    }
+    if (state.shields.has(r + "," + c)) {
+      updateStatus("这枚棋子已经有护盾了");
+      return;
+    }
+    state.shields.add(r + "," + c);
+    consumePendingCard();
+    state.skillMode = null;
+    updateStatus("🛡 给 " + NAMES[p.color][p.type] + " 套上护盾！");
+    state.currentTurn = state.oppColor;
+    updateStatus();
+  }
+}
+
+// ============================================================
+// 聊天系统
+// ============================================================
+const chatState = {
+  open: false,
+  sendHistory: [],
+  sendIndex: -1,
+  hideTimer: null,
+};
+
+function setupChatInput() {
+  const input = document.getElementById("chatInput");
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendChat();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeChatInput();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (chatState.sendHistory.length === 0) return;
+      if (chatState.sendIndex === -1) chatState.sendIndex = chatState.sendHistory.length - 1;
+      else if (chatState.sendIndex > 0) chatState.sendIndex--;
+      input.value = chatState.sendHistory[chatState.sendIndex];
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (chatState.sendIndex === -1) return;
+      chatState.sendIndex++;
+      if (chatState.sendIndex >= chatState.sendHistory.length) {
+        chatState.sendIndex = -1;
+        input.value = "";
+      } else {
+        input.value = chatState.sendHistory[chatState.sendIndex];
+      }
+    }
+  });
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!state.active || state.gameOver) return;
+  if (document.activeElement === document.getElementById("chatInput")) return;
+  if (e.key === "t" || e.key === "T") {
+    e.preventDefault();
+    openChatInput();
+  }
+});
+
+document.addEventListener("wheel", (e) => {
+  if (!state.active || state.chatMessages.length === 0) return;
+  if (document.activeElement === document.getElementById("chatInput")) return;
+  if (chatState.open) return;
+  e.preventDefault();
+  const step = e.deltaY > 0 ? -3 : 3;
+  const total = state.chatMessages.length;
+  const maxOffset = Math.max(0, total - state.CHAT_MAX_LINES);
+  state.chatScrollOffset = Math.max(0, Math.min(maxOffset, state.chatScrollOffset + step));
+  renderChat();
+  scheduleChatHide();
+}, { passive: false });
+
+function openChatInput() {
+  chatState.open = true;
+  document.getElementById("chatInputWrap").classList.add("active");
+  const input = document.getElementById("chatInput");
+  input.value = "";
+  input.focus();
+  renderChat();
+  if (chatState.hideTimer) clearTimeout(chatState.hideTimer);
+}
+
+function closeChatInput() {
+  chatState.open = false;
+  document.getElementById("chatInputWrap").classList.remove("active");
+  scheduleChatHide();
+}
+
+function sendChat() {
+  const input = document.getElementById("chatInput");
+  const text = input.value.trim();
+  if (text) {
+    chatState.sendHistory.push(text);
+    chatState.sendIndex = -1;
+    appendChat("自己", text);
+    send({ type: "chat", text: text });
+  }
+  closeChatInput();
+}
+
+function appendChat(sender, text) {
+  state.chatMessages.push({ sender, text });
+  state.chatScrollOffset = 0;
+  renderChat();
+  scheduleChatHide();
+}
+
+function renderChat() {
+  const el = document.getElementById("chatMessages");
+  el.innerHTML = "";
+  const total = state.chatMessages.length;
+  let visibleEnd = total - state.chatScrollOffset;
+  if (visibleEnd < 0) visibleEnd = 0;
+  const visibleStart = Math.max(0, visibleEnd - state.CHAT_MAX_LINES);
+  const visible = state.chatMessages.slice(visibleStart, visibleEnd);
+
+  for (const msg of visible) {
+    const line = document.createElement("div");
+    line.className = "chatLine";
+    const tagClass = msg.sender === "自己" ? "chatTag-self" : "chatTag-opp";
+    line.innerHTML = `<span class="${tagClass}">&lt;${msg.sender}&gt;</span> <span class="chatText">${escapeHtml(msg.text)}</span>`;
+    el.appendChild(line);
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, ch => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[ch]));
+}
+
+function scheduleChatHide() {
+  if (chatState.hideTimer) clearTimeout(chatState.hideTimer);
+  chatState.hideTimer = setTimeout(() => {
+    if (chatState.open) return;
+    state.chatMessages = state.chatMessages.slice(-8);
+    document.getElementById("chatMessages").innerHTML = "";
+    state.chatScrollOffset = 0;
+  }, 8000);
+}
+
+</script>
+</body>
+</html>

@@ -7,4 +7,4 @@
 你可以下象棋的时候下围棋，也可以下围棋的时候下五子棋，也可以下五子棋的时候玩卡牌，甚至这四这可以连在一起，神奇吧😀。
 这还有聊天功能，只不过是文字聊天😥
 我就给你一些图片，至于怎么玩，自己探索，不然就没意思了😘。
-![Uploading image.png…]()
+<img width="1196" height="902" alt="image" src="https://github.com/user-attachments/assets/ae782293-d999-486f-828d-76db24bc02f2" />

@@ -39,3 +39,6 @@
 1. 房主点「创建房间」，复制房间号
 2. 朋友用同一链接打开，点「加入房间」
 3. 粘贴房间号，即可对战
+
+视屏链接：https://www.bilibili.com/video/BV1Lxam6CEKy?t=5.4
+关注作者b站号：https://space.bilibili.com/3493268088162744

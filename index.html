@@ -240,6 +240,7 @@ const SKILL_DEFS = {
 // 游戏状态
 // ============================================================
 let canvas, ctx;
+let loopRunning = false;
 let state = {
   board: [],
   currentTurn: "red",
@@ -259,33 +260,64 @@ let state = {
   skillSource: null,
   superGoUntil: 0,
   active: true,
+  synced: false,          // 是否已完成首次状态同步
   chatMessages: [],
   chatScrollOffset: 0,
   CHAT_MAX_LINES: 5,
 };
 
 // ============================================================
-// 网络 (PeerJS)
+// 网络 (PeerJS) —— 房主权威 + 全量状态同步
 // ============================================================
 let peer = null;
 let conn = null;
 let isHost = false;
+let connected = false;
+let outQueue = [];         // 未发送消息队列
+
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:global.stun.twilio.com:3478" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ],
+  sdpSemantics: "unified-plan",
+};
 
 function createRoom() {
   const roomId = "chess-" + Math.floor(100000 + Math.random() * 900000);
-  peer = new Peer(roomId, { debug: 1 });
+  peer = new Peer(roomId, { debug: 1, config: RTC_CONFIG });
 
   peer.on("open", (id) => {
     document.getElementById("roomIdText").textContent = id;
     document.getElementById("roomModal").classList.remove("hidden");
     startGame("red", true);
   });
+
   peer.on("error", (err) => {
-    console.error(err);
-    toast("房间创建失败: " + err.type);
+    console.error("[peer error]", err);
+    if (err.type === "unavailable-id") {
+      toast("房间号被占用，请重新创建");
+    } else if (err.type === "network" || err.type === "server-error") {
+      toast("信令服务器连接失败，请检查网络或稍后重试");
+    } else {
+      toast("房间创建失败: " + err.type);
+    }
   });
+
+  peer.on("disconnected", () => {
+    if (state.active && !state.gameOver) {
+      try { peer.reconnect(); } catch (e) {}
+    }
+  });
+
   peer.on("connection", (c) => {
+    // 只保留最新的连接，避免重连时旧连接干扰
+    if (conn && conn !== c) {
+      try { conn.close(); } catch (e) {}
+    }
     conn = c;
+    isHost = true;
     setupConnHandlers();
   });
 }
@@ -331,63 +363,179 @@ function closeJoinDialog() {
 }
 function doJoin() {
   const hostId = document.getElementById("joinInput").value.trim();
-  if (!hostId) return;
+  if (!hostId) { toast("请输入房间号"); return; }
   closeJoinDialog();
 
-  peer = new Peer({ debug: 1 });
+  peer = new Peer({ debug: 1, config: RTC_CONFIG });
+
   peer.on("open", () => {
-    conn = peer.connect(hostId);
+    conn = peer.connect(hostId, { reliable: true });
+    isHost = false;
     setupConnHandlers();
     startGame("black", false);
   });
+
   peer.on("error", (err) => {
-    console.error(err);
-    toast("连接失败: " + err.type);
+    console.error("[peer error]", err);
+    if (err.type === "peer-unavailable") {
+      toast("找不到该房间，请确认房间号是否正确");
+    } else if (err.type === "network" || err.type === "server-error") {
+      toast("信令服务器连接失败，请检查网络");
+    } else {
+      toast("连接失败: " + err.type);
+    }
+  });
+
+  peer.on("disconnected", () => {
+    if (state.active && !state.gameOver) {
+      try { peer.reconnect(); } catch (e) {}
+    }
   });
 }
 
 function setupConnHandlers() {
-  conn.on("open", () => {
+  const onOpen = () => {
+    connected = true;
     document.getElementById("connInfo").textContent = "⚡ 已连接";
     toast("连接成功！");
+    flushQueue();
     if (isHost) {
-      setTimeout(() => broadcastFullState(), 500);
+      // 房主延迟一点发送初始快照，确保客户端已经准备好接收
+      setTimeout(() => syncState(), 300);
+    }
+  };
+
+  // PeerJS 有时 connection 事件到达时 open 已经触发，需要手动判断
+  if (conn.open) {
+    onOpen();
+  } else {
+    conn.on("open", onOpen);
+  }
+
+  conn.on("data", (data) => {
+    try {
+      handleNetworkMessage(data);
+    } catch (e) {
+      console.error("[data handler error]", e);
     }
   });
-  conn.on("data", (data) => {
-    handleNetworkMessage(data);
-  });
+
   conn.on("close", () => {
+    connected = false;
     document.getElementById("connInfo").textContent = "❌ 对方已断开";
-    toast("对方已断开");
+    toast("对方已断开连接");
+    state.synced = false;
     state.gameOver = true;
+    updateStatus("❌ 对方已断开连接，请返回主菜单重开");
   });
-  conn.on("error", (e) => console.error("conn error", e));
+
+  conn.on("error", (e) => {
+    console.error("[conn error]", e);
+    document.getElementById("connInfo").textContent = "⚠ 连接异常";
+    toast("连接出现异常");
+  });
 }
 
+/** 发送（未连接时进队列，连接后自动补发） */
 function send(obj) {
-  if (conn && conn.open) conn.send(obj);
+  if (conn && conn.open) {
+    try {
+      conn.send(obj);
+      return;
+    } catch (e) {
+      console.error("[send error]", e);
+    }
+  }
+  outQueue.push(obj);
+}
+
+function flushQueue() {
+  if (!conn || !conn.open) return;
+  while (outQueue.length) {
+    const m = outQueue.shift();
+    try {
+      conn.send(m);
+    } catch (e) {
+      console.error("[flush error]", e);
+      outQueue.unshift(m);
+      break;
+    }
+  }
+}
+
+/** 把棋盘序列化成可传输的纯数据 */
+function serializeBoard() {
+  return state.board.map(row => row.map(cell => {
+    if (!cell) return null;
+    if (isGoPiece(cell)) return cell;
+    return { color: cell.color, type: cell.type };
+  }));
+}
+
+/**
+ * 全量状态同步 —— 修复联机的核心。
+ * 任何会改变棋盘 / 护盾 / 回合 / 分数的操作，都必须调用它。
+ */
+function syncState() {
+  if (!conn || !conn.open) return;
+  send({
+    type: "sync",
+    board: serializeBoard(),
+    shields: [...state.shields],
+    turn: state.currentTurn,
+    scores: state.scores,
+    over: state.gameOver,
+    superGoRemain: Math.max(0, state.superGoUntil - Date.now()),
+  });
 }
 
 function handleNetworkMessage(msg) {
+  if (!msg || typeof msg !== "object") return;
   switch (msg.type) {
-    case "full_state":
+    case "sync":
       applyFullState(msg);
       break;
-    case "move":
-      applyRemoteMove(msg);
-      break;
-    case "go_move":
-      applyRemoteGoMove(msg);
-      break;
-    case "score":
-      state.scores = msg.scores;
-      updateScoreDisplay();
-      break;
     case "chat":
-      appendChat("对方", msg.text);
+      appendChat("对方", String(msg.text || "").slice(0, 200));
+      break;
+    case "ping":
+      send({ type: "pong" });
+      break;
+    case "pong":
+      break;
+    default:
       break;
   }
+}
+
+function applyFullState(msg) {
+  if (!Array.isArray(msg.board)) return;
+  state.board = msg.board.map(row => row.map(cell => {
+    if (!cell) return null;
+    if (cell === GO_BLACK || cell === GO_WHITE) return cell;
+    return { color: cell.color, type: cell.type };
+  }));
+  state.shields = new Set(msg.shields || []);
+  state.currentTurn = msg.turn;
+  state.scores = msg.scores || { red:0, black:0 };
+  state.superGoUntil = Date.now() + (msg.superGoRemain || 0);
+  state.selected = null;
+  state.synced = true;
+
+  updateScoreDisplay();
+
+  if (msg.over && !state.gameOver) {
+    state.gameOver = true;
+    const red = state.scores.red, black = state.scores.black;
+    const winner = red > black ? "红方获胜" : (black > red ? "黑方获胜" : "平局");
+    updateStatus("🏁 对局结束｜红方 " + red + " : " + black + " 黑方｜" + winner);
+    setTimeout(() => {
+      alert("对局结算\n\n🔴 红方积分：" + red + "\n⚫ 黑方积分：" + black + "\n\n🏆 " + winner);
+    }, 100);
+    return;
+  }
+
+  updateStatus();
 }
 
 // ============================================================
@@ -400,13 +548,21 @@ function startGame(myColor, host) {
   state.flipped = myColor === "black";
   state.currentTurn = "red";
   state.gameOver = false;
+  state.active = true;
+  state.synced = host;              // 房主本身就是权威，无需等待
   state.selected = null;
   state.scores = { red:0, black:0 };
   state.shields = new Set();
   state.myCards = [];
   state.skillMode = null;
+  state.pendingCardIdx = -1;
+  state.pendingSkill = null;
+  state.shopPayList = [];
+  state.shopPendingSkill = null;
+  state.skillSource = null;
   state.superGoUntil = 0;
   state.chatMessages = [];
+  state.chatScrollOffset = 0;
   setupChessBoard();
 
   document.getElementById("menuScreen").classList.add("hidden");
@@ -414,6 +570,9 @@ function startGame(myColor, host) {
 
   canvas = document.getElementById("board");
   ctx = canvas.getContext("2d");
+  // 防止重复绑定
+  canvas.removeEventListener("click", onBoardClick);
+  canvas.removeEventListener("touchstart", onBoardTouch);
   canvas.addEventListener("click", onBoardClick);
   canvas.addEventListener("touchstart", onBoardTouch, { passive: false });
 
@@ -422,9 +581,14 @@ function startGame(myColor, host) {
   updateStatus();
   updateCardBar();
   setupChatInput();
-  requestAnimationFrame(gameLoop);
 
-  setInterval(() => {
+  if (!loopRunning) {
+    loopRunning = true;
+    requestAnimationFrame(gameLoop);
+  }
+
+  if (window._superGoTimer) clearInterval(window._superGoTimer);
+  window._superGoTimer = setInterval(() => {
     if (state.superGoUntil > 0 && Date.now() > state.superGoUntil) {
       state.superGoUntil = 0;
       updateStatus();
@@ -434,6 +598,8 @@ function startGame(myColor, host) {
 
 function leaveGame() {
   state.active = false;
+  loopRunning = false;
+  if (window._superGoTimer) clearInterval(window._superGoTimer);
   if (conn) try { conn.close(); } catch(e){}
   if (peer) try { peer.destroy(); } catch(e){}
   document.getElementById("gameScreen").classList.add("hidden");
@@ -665,7 +831,7 @@ function drawSkillSource() {
 }
 
 function gameLoop() {
-  if (!state.active) return;
+  if (!state.active) { loopRunning = false; return; }
   render();
   requestAnimationFrame(gameLoop);
 }
@@ -862,7 +1028,12 @@ function onBoardClick(e) {
 }
 
 function handleClick(clientX, clientY) {
+  if (!state.active) return;
   if (state.gameOver) return;
+  if (!state.synced) {
+    updateStatus("⏳ 正在等待房主同步棋盘，请稍候...");
+    return;
+  }
 
   const rect = canvas.getBoundingClientRect();
   const scaleX = BOARD_W / rect.width;
@@ -934,17 +1105,11 @@ function handleClick(clientX, clientY) {
 
     const capturedSurround = checkSurroundCapture();
     updateScoreDisplay();
-    send({ type:"move", fr, fc, tr:r, tc:c });
-    send({ type:"score", scores: state.scores });
-
-    if (capturedSurround > 0) {
-      updateStatus("⚫ 你走子，围死 " + capturedSurround + " 枚棋子！+" + (capturedSurround*2) + "分");
-    }
 
     if (checkFiveInLine(r, c, state.myColor)) {
       state.scores[state.myColor] -= 10;
       updateScoreDisplay();
-      send({ type:"score", scores: state.scores });
+      syncState();
       settleGame((state.myColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
       return;
     }
@@ -954,20 +1119,25 @@ function handleClick(clientX, clientY) {
     if (oppMoves.length === 0) {
       state.scores[state.myColor] += 10;
       updateScoreDisplay();
-      send({ type:"score", scores: state.scores });
+      syncState();
       settleGame((state.myColor === "red" ? "红方" : "黑方") + "将死对手 +10分");
       return;
     }
     if (isInCheck(opp)) {
       state.scores[state.myColor] += 10;
       updateScoreDisplay();
-      send({ type:"score", scores: state.scores });
+      syncState();
       settleGame((state.myColor === "red" ? "红方" : "黑方") + "将军 +10分");
       return;
     }
 
     state.currentTurn = opp;
-    updateStatus();
+    syncState();
+    if (capturedSurround > 0) {
+      updateStatus("⚫ 你走子，围死 " + capturedSurround + " 枚棋子！+" + (capturedSurround*2) + "分");
+    } else {
+      updateStatus();
+    }
     return;
   }
 
@@ -1011,16 +1181,17 @@ function placeGoPiece(r, c) {
   }
 
   const captured = checkSurroundCapture();
-  send({ type:"go_move", r, c, go_color: myGo });
-  send({ type:"score", scores: state.scores });
 
   if (checkFiveInLine(r, c, state.myColor)) {
     state.scores[state.myColor] -= 10;
     updateScoreDisplay();
-    send({ type:"score", scores: state.scores });
+    syncState();
     settleGame((state.myColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
     return;
   }
+
+  state.currentTurn = state.oppColor;
+  syncState();
 
   const goName = myGo === GO_BLACK ? "黑子" : "白子";
   let msg = "⚫ 你落" + goName;
@@ -1028,109 +1199,13 @@ function placeGoPiece(r, c) {
   if (captured > 0) msg += "，围死 " + captured + " 枚棋子！+" + (captured*2) + "分";
   if (extraEaten === 0 && captured === 0) msg += "成功。";
   updateStatus(msg);
-
-  state.currentTurn = state.oppColor;
-  updateStatus();
-}
-
-// ============================================================
-// 网络消息处理
-// ============================================================
-function applyRemoteMove(msg) {
-  const { fr, fc, tr, tc } = msg;
-  const moving = state.board[fr][fc];
-  if (!moving) return;
-  const moverColor = moving.color;
-
-  const cap = state.board[tr][tc];
-  state.board[tr][tc] = moving;
-  state.board[fr][fc] = null;
-
-  if (state.shields.has(fr + "," + fc)) {
-    state.shields.delete(fr + "," + fc);
-    state.shields.add(tr + "," + tc);
-  }
-  if (isChessPiece(cap)) state.scores[moverColor] += 2;
-  checkSurroundCapture();
-  updateScoreDisplay();
-
-  if (checkFiveInLine(tr, tc, moverColor)) {
-    state.scores[moverColor] -= 10;
-    updateScoreDisplay();
-    settleGame((moverColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
-    return;
-  }
-
-  state.currentTurn = state.currentTurn === "red" ? "black" : "red";
-  const opp = state.currentTurn;
-
-  const oppMoves = getLegalMoves(opp);
-  if (oppMoves.length === 0) {
-    state.scores[moverColor] += 10;
-    updateScoreDisplay();
-    settleGame((moverColor === "red" ? "红方" : "黑方") + "将死对手 +10分");
-    return;
-  }
-  if (isInCheck(opp)) {
-    state.scores[moverColor] += 10;
-    updateScoreDisplay();
-    settleGame((moverColor === "red" ? "红方" : "黑方") + "将军 +10分");
-    return;
-  }
-  updateStatus();
-}
-
-function applyRemoteGoMove(msg) {
-  const { r, c, go_color } = msg;
-  if (!inBoard(r, c)) return;
-  if (state.board[r][c]) return;
-  state.board[r][c] = go_color;
-  checkSurroundCapture();
-  updateScoreDisplay();
-  const moverColor = go_color === GO_BLACK ? "red" : "black";
-  if (checkFiveInLine(r, c, moverColor)) {
-    state.scores[moverColor] -= 10;
-    updateScoreDisplay();
-    settleGame((moverColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
-    return;
-  }
-  state.currentTurn = state.currentTurn === "red" ? "black" : "red";
-  updateStatus();
-}
-
-function broadcastFullState() {
-  const board = state.board.map(row => row.map(cell => {
-    if (!cell) return null;
-    if (isGoPiece(cell)) return cell;
-    return { color: cell.color, type: cell.type };
-  }));
-  send({
-    type: "full_state",
-    board,
-    shields: [...state.shields],
-    turn: state.currentTurn,
-    scores: state.scores,
-  });
-}
-
-function applyFullState(msg) {
-  state.board = msg.board.map(row => row.map(cell => {
-    if (!cell) return null;
-    if (cell === GO_BLACK || cell === GO_WHITE) return cell;
-    return { color: cell.color, type: cell.type };
-  }));
-  state.shields = new Set(msg.shields);
-  state.currentTurn = msg.turn;
-  state.scores = msg.scores;
-  state.selected = null;
-  updateScoreDisplay();
-  updateStatus("🔄 已同步房主状态");
 }
 
 // ============================================================
 // 结算
 // ============================================================
 function settleGame(reason) {
+  if (state.gameOver) return;
   state.gameOver = true;
   const red = state.scores.red;
   const black = state.scores.black;
@@ -1139,6 +1214,7 @@ function settleGame(reason) {
   else if (black > red) winner = "黑方获胜";
   else winner = "平局";
   updateStatus("🏁 " + reason + "｜红方 " + red + " : " + black + " 黑方｜" + winner);
+  syncState();
   setTimeout(() => {
     alert("对局结算\n\n" + reason + "\n\n🔴 红方积分：" + red + "\n⚫ 黑方积分：" + black + "\n\n🏆 " + winner);
   }, 100);
@@ -1150,6 +1226,7 @@ function settleGame(reason) {
 function updateStatus(msg) {
   const el = document.getElementById("status");
   if (msg) { el.textContent = msg; return; }
+  if (!state.synced) { el.textContent = "⏳ 正在等待房主同步棋盘..."; return; }
   const turnName = state.currentTurn === "red" ? "红方" : "黑方";
   const myName = state.myColor === "red" ? "红方" : "黑方";
   let hint;
@@ -1205,6 +1282,7 @@ function toast(msg) {
 // ============================================================
 function openShop() {
   if (state.gameOver) return;
+  if (!state.synced) { toast("等待棋盘同步完成"); return; }
   const list = document.getElementById("shopList");
   list.innerHTML = "";
   for (const [name, info] of Object.entries(SKILL_DEFS)) {
@@ -1260,6 +1338,7 @@ function handleShopPayClick(r, c, p) {
     state.shopPendingSkill = null;
     state.skillMode = null;
     updateCardBar();
+    syncState();                       // ✅ 同步棋盘上被移除的支付棋子
     updateStatus("✨ 成功购买【" + paidName + "】！卡片已加入手牌。");
   }
 }
@@ -1269,6 +1348,7 @@ function handleShopPayClick(r, c, p) {
 // ============================================================
 function selectCard(idx) {
   if (state.gameOver) return;
+  if (!state.synced) { toast("等待棋盘同步完成"); return; }
   if (state.currentTurn !== state.myColor) {
     updateStatus("❌ 不是你的回合！");
     return;
@@ -1292,6 +1372,7 @@ function selectCard(idx) {
     state.skillMode = null;
     state.superGoUntil = Date.now() + 3000;
     updateCardBar();
+    syncState();                       // ✅ 同步超级围棋状态
     updateStatus("⚡ 超级围棋已激活！3 秒内点击空位下围棋！");
   }
 }
@@ -1327,17 +1408,17 @@ function handleSkillClick(r, c, p) {
     consumePendingCard();
     state.skillMode = null;
     state.skillSource = null;
-    updateStatus("✨ 发动【复制】！得到 " + NAMES[state.myColor][srcType] + "！");
 
     if (checkFiveInLine(r, c, state.myColor)) {
       state.scores[state.myColor] -= 10;
       updateScoreDisplay();
-      send({ type:"score", scores: state.scores });
+      syncState();
       settleGame((state.myColor === "red" ? "红方" : "黑方") + "连成五子，反输 -10分");
       return;
     }
     state.currentTurn = state.oppColor;
-    updateStatus();
+    syncState();                       // ✅ 同步复制出来的棋子
+    updateStatus("✨ 发动【复制】！得到 " + NAMES[state.myColor][srcType] + "！");
   } else if (state.skillMode === "pick_shield") {
     if (!isChessPiece(p) || p.color !== state.myColor) {
       updateStatus("只能给自己的象棋棋子套护盾");
@@ -1350,9 +1431,9 @@ function handleSkillClick(r, c, p) {
     state.shields.add(r + "," + c);
     consumePendingCard();
     state.skillMode = null;
-    updateStatus("🛡 给 " + NAMES[p.color][p.type] + " 套上护盾！");
     state.currentTurn = state.oppColor;
-    updateStatus();
+    syncState();                       // ✅ 同步护盾
+    updateStatus("🛡 给 " + NAMES[p.color][p.type] + " 套上护盾！");
   }
 }
 
@@ -1368,6 +1449,8 @@ const chatState = {
 
 function setupChatInput() {
   const input = document.getElementById("chatInput");
+  if (input._bound) return;
+  input._bound = true;
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -1471,7 +1554,7 @@ function renderChat() {
 }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, ch => ({
+  return String(s).replace(/[&<>"']/g, ch => ({
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
   }[ch]));
 }
